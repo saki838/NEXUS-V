@@ -1,0 +1,90 @@
+services:
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: nexus
+      POSTGRES_PASSWORD: nexus
+      POSTGRES_DB: nexusv
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nexus"]
+      interval: 5s
+      retries: 5
+
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.5
+    environment:
+      ETCD_AUTO_COMPACTION_MODE: revision
+      ETCD_AUTO_COMPACTION_RETENTION: "1000"
+      ETCD_QUOTA_BACKEND_BYTES: "4294967296"
+    command: etcd -advertise-client-urls=http://127.0.0.1:2379 -listen-client-urls http://0.0.0.0:2379
+
+  minio:
+    image: minio/minio:RELEASE.2023-03-20T20-16-18Z
+    environment:
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+    command: minio server /minio_data
+    volumes:
+      - miniodata:/minio_data
+
+  milvus:
+    image: milvusdb/milvus:v2.4.0
+    command: ["milvus", "run", "standalone"]
+    environment:
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: minio:9000
+    depends_on:
+      - etcd
+      - minio
+    ports:
+      - "19530:19530"
+    volumes:
+      - milvusdata:/var/lib/milvus
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    environment:
+      DATABASE_URL: postgresql://nexus:nexus@postgres:5432/nexusv
+      MILVUS_HOST: milvus
+      ERP_URL: http://erp-mock:8080
+      LOW_STOCK_THRESHOLD: "20.0"
+      TRANSFORMERS_CACHE: /model-cache
+      HF_HOME: /model-cache
+      HF_DATASETS_CACHE: /model-cache
+      HUGGING_FACE_HUB_TOKEN: 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
+      HF_TOKEN: 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
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      milvus:
+        condition: service_started
+    volumes:
+      - model-cache:/model-cache
+      - ./scripts:/app/scripts
+      - ./data:/app/data
+
+  frontend:
+    image: node:20-alpine
+    working_dir: /app
+    command: sh -c "npm install && npm start"
+    environment:
+      REACT_APP_WS_URL: ws://localhost:8000/ws/alerts
+    ports:
+      - "3001:3000"
+    volumes:
+      - ./frontend:/app
+
+volumes:
+  pgdata:
+  miniodata:
+  milvusdata:
+  model-cache:
